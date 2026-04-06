@@ -1,0 +1,29 @@
+# Core deep learning
+# Note: GPU (CUDA) is required for notebooks [1] and [3] (embedding inference, ~45 min and ~10 min)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Hugging Face ecosystem
+# Note: ConceptCLIP backbone is loaded via AutoModel.from_pretrained('JerrryNie/ConceptCLIP')
+#       No separate pip install required; set HF_TOKEN env var for authentication.
+transformers>=4.30.0
+huggingface_hub>=0.16.0
+
+# Medical imaging dataset (BloodMNIST auto-downloads via API)
+medmnist>=2.3.0
+
+# Scientific computing
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scipy>=1.11.0
+
+# Gradient boosting
+xgboost>=1.7.0
+
+# Visualization
+matplotlib>=3.7.0
+Pillow>=9.5.0
+
+# Utilities
+tqdm>=4.65.0
