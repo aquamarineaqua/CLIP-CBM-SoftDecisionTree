@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-SDT (Soft Decision Tree) 可视化工具函数
+SDT (Soft Decision Tree) Visualization Utilities
 
-提供以下功能：
-1. extract_sdt_parameters: 提取SDT树的参数信息
-2. visualize_sdt: 可视化整棵SDT及样本决策路径
-3. visualize_internal_node_weight: 可视化内部节点权重向量
-4. get_leaf_distribution: 统计叶子节点的样本分布
-5. compute_internal_node_counts: 计算内部节点的样本数量
-6. compute_node_logits_for_dataset: 计算节点在数据集上的logits
-7. visualize_top_k_images_for_node: 可视化节点Top-K激活图像
-8. visualize_top_and_bottom_k_images_for_node: 可视化节点高/低激活对比图像
-9. analyze_all_nodes_summary: 生成所有节点的激活分析摘要
+Provides the following functions:
+1. extract_sdt_parameters: Extract parameter information from the SDT
+2. visualize_sdt: Visualize the full SDT and a sample's decision path
+3. visualize_internal_node_weight: Visualize an internal node's weight vector
+4. get_leaf_distribution: Compute sample distribution across leaf nodes
+5. compute_internal_node_counts: Compute sample counts for internal nodes
+6. compute_node_logits_for_dataset: Compute per-node logits on a dataset
+7. visualize_top_k_images_for_node: Visualize Top-K activation images for a node
+8. visualize_top_and_bottom_k_images_for_node: Visualize high/low activation images for a node
+9. analyze_all_nodes_summary: Generate an activation analysis summary for all nodes
 """
 
 import math
@@ -20,7 +20,7 @@ import torch
 import matplotlib.pyplot as plt
 
 
-# ===================== 颜色配置 =====================
+# ===================== Color Configuration =====================
 
 ESSENTIAL_COLORS = {
     'internal_node': '#1f77b4',  # blue
@@ -30,27 +30,27 @@ ESSENTIAL_COLORS = {
 }
 
 
-# ===================== 叶子节点与内部节点统计 =====================
+# ===================== Leaf Node and Internal Node Statistics =====================
 
 def get_leaf_distribution(tree, dataloader, device):
     """
-    统计通过SDT决策路径到达各叶子节点的样本分布。
-    
+    Compute the sample distribution reaching each leaf node along the SDT decision path.
+
     Args:
-        tree: 训练好的SDT模型
-        dataloader: 数据加载器
-        device: 计算设备
-    
+        tree: trained SDT model
+        dataloader: data loader
+        device: compute device
+
     Returns:
-        leaf_counts: 每个叶子节点的样本数量 (numpy array)
-        leaf_class_counts: 每个叶子节点中各类别的样本数量 (dict: leaf_idx -> numpy array)
-        leaf_predictions: 每个叶子节点预测的类别 (numpy array)
+        leaf_counts: sample count per leaf node (numpy array)
+        leaf_class_counts: per-class sample count at each leaf (dict: leaf_idx -> numpy array)
+        leaf_predictions: predicted class for each leaf node (numpy array)
     """
     tree.eval()
     L = tree.leaf_node_num_
     num_classes = tree.output_dim
     
-    # 初始化计数器
+    # Initialize counters
     leaf_counts = np.zeros(L, dtype=np.int64)
     leaf_class_counts = {l: np.zeros(num_classes, dtype=np.int64) for l in range(L)}
     
@@ -59,7 +59,7 @@ def get_leaf_distribution(tree, dataloader, device):
             data = data.to(device)
             target = target.to(device)
             
-            # 获取每个样本的叶子节点概率分布 mu
+            # Compute per-sample leaf probability distribution mu
             X = data
             batch_size = X.size(0)
             
@@ -67,13 +67,13 @@ def get_leaf_distribution(tree, dataloader, device):
             bias = torch.ones(batch_size, 1, device=device, dtype=X.dtype)
             X_aug = torch.cat((bias, X), dim=1)
             
-            # 计算路由概率
+            # Compute routing probabilities
             logits_internal = tree.inner_nodes(X_aug)
             path_prob = torch.sigmoid(tree.inv_temp * logits_internal)
             path_prob = torch.unsqueeze(path_prob, dim=2)
             path_prob = torch.cat((path_prob, 1 - path_prob), dim=2)
             
-            # 计算到达各叶子的概率 mu
+            # Compute leaf-reaching probabilities mu
             mu = torch.ones(batch_size, 1, 1, device=device, dtype=X.dtype)
             begin_idx = 0
             end_idx = 1
@@ -86,18 +86,18 @@ def get_leaf_distribution(tree, dataloader, device):
             
             mu = mu.view(batch_size, L)
             
-            # Hard routing: 选择概率最大的叶子节点
+            # Hard routing: assign sample to the leaf with highest probability
             best_leaf = torch.argmax(mu, dim=1).cpu().numpy()
             target_np = target.cpu().numpy()
             
-            # 统计
+            # Accumulate counts
             for i in range(batch_size):
                 leaf_idx = best_leaf[i]
                 class_idx = target_np[i]
                 leaf_counts[leaf_idx] += 1
                 leaf_class_counts[leaf_idx][class_idx] += 1
     
-    # 获取每个叶子节点预测的类别
+    # Get predicted class for each leaf node
     leaf_predictions = np.zeros(L, dtype=np.int64)
     with torch.no_grad():
         W_leaf = tree.leaf_nodes.weight.detach().cpu()  # [C, L]
@@ -109,23 +109,23 @@ def get_leaf_distribution(tree, dataloader, device):
 
 def compute_internal_node_counts(leaf_counts, depth):
     """
-    通过叶子节点的样本数量，计算每个内部节点的样本数量。
-    
+    Compute sample counts for each internal node by aggregating upward from leaf counts.
+
     Args:
-        leaf_counts: 每个叶子节点的样本数量 (numpy array)
-        depth: 树的深度
-    
+        leaf_counts: sample count per leaf node (numpy array)
+        depth: tree depth
+
     Returns:
-        internal_counts: 每个内部节点的样本数量 (numpy array)
+        internal_counts: sample count per internal node (numpy array)
     """
     L = len(leaf_counts)
     internal_node_num = L - 1
     internal_counts = np.zeros(internal_node_num, dtype=np.int64)
     
-    # 从叶子节点向上计算
+    # Aggregate upward from leaf nodes
     for l in range(L):
         count = leaf_counts[l]
-        node_idx = l + internal_node_num  # 叶子节点在完全二叉树中的索引
+        node_idx = l + internal_node_num  # leaf index in the complete binary tree
         while node_idx > 0:
             parent_idx = (node_idx - 1) // 2
             internal_counts[parent_idx] += count
@@ -134,7 +134,7 @@ def compute_internal_node_counts(leaf_counts, depth):
     return internal_counts
 
 
-# ===================== 参数提取 =====================
+# ===================== Parameter Extraction =====================
 
 def extract_sdt_parameters(tree):
     """
@@ -146,10 +146,10 @@ def extract_sdt_parameters(tree):
     data augmentation; b comes from column 0 of inner_nodes.weight.
     
     Args:
-        tree: 训练好的SDT模型
-    
+        tree: trained SDT model
+
     Returns:
-        dict: 包含 'depth', 'internal_nodes', 'leaves' 的字典
+        dict: dictionary containing 'depth', 'internal_nodes', 'leaves'
     """
     tree.eval()
     with torch.no_grad():
@@ -191,17 +191,17 @@ def extract_sdt_parameters(tree):
     }
 
 
-# ===================== 辅助函数 =====================
+# ===================== Helper Functions =====================
 
 def _binary_tree_positions(depth, x_span=(0.0, 1.0), y_step=1.0):
     """
     Generate node coordinates for a full binary tree.
     
     Args:
-        depth: 树的深度
-        x_span: x轴范围 (min, max)
-        y_step: 每层y坐标的步进值
-    
+        depth: tree depth
+        x_span: x-axis range (min, max)
+        y_step: y-coordinate step per layer
+
     Returns:
         pos_internal: dict[i] -> (x, y) for i in [0, Ni)
         pos_leaf: dict[l] -> (x, y) for l in [0, L)
@@ -239,9 +239,9 @@ def _best_path_for_sample(tree, x_single):
     Given a single sample, return best path information.
     
     Args:
-        tree: SDT模型
-        x_single: 单个样本 (Tensor)
-    
+        tree: SDT model
+        x_single: single sample (Tensor)
+
     Returns:
         path_internal: list of internal node indices (from root to the last internal node)
         lr_choices: list of 0/1, 0 means left, 1 means right
@@ -300,7 +300,7 @@ def _best_path_for_sample(tree, x_single):
     return path_internal, lr_choices, best_leaf, lr_probs
 
 
-# ===================== SDT树可视化 =====================
+# ===================== SDT Tree Visualization =====================
 
 def visualize_sdt(tree, x_single, figsize=(10, 6), title=None):
     """
@@ -312,19 +312,19 @@ def visualize_sdt(tree, x_single, figsize=(10, 6), title=None):
     Requirement: tree.hard_leaf_inference must be True.
     
     Args:
-        tree: SDT模型 (hard_leaf_inference=True)
-        x_single: 单个样本的特征向量 (Tensor)
-        figsize: 图形大小
-        title: 图形标题
-    
+        tree: SDT model (hard_leaf_inference=True)
+        x_single: feature vector of a single sample (Tensor)
+        figsize: figure size
+        title: figure title
+
     Returns:
         fig: matplotlib Figure
         ax: matplotlib Axes
-        info: dict, 包含提取的SDT参数信息
+        info: dict containing extracted SDT parameter information
     """
     if not getattr(tree, 'hard_leaf_inference', False):
-        raise ValueError('hard_leaf_inference 必须为 True 才能进行该可视化。'
-                         '请在构造 SDT 时设置 hard_leaf_inference=True。')
+        raise ValueError('hard_leaf_inference must be True for this visualization. '
+                         'Set hard_leaf_inference=True when constructing the SDT.')
 
     D = tree.depth
     Ni = tree.internal_node_num_
@@ -416,7 +416,7 @@ def visualize_sdt(tree, x_single, figsize=(10, 6), title=None):
     return fig, ax, info
 
 
-# ===================== 内部节点权重可视化 =====================
+# ===================== Internal Node Weight Visualization =====================
 
 def visualize_internal_node_weight(W, b=None,
                                    mode='heatmap',
@@ -463,15 +463,15 @@ def visualize_internal_node_weight(W, b=None,
             if r * r == N:
                 image_shape = (r, r)
             else:
-                raise ValueError(f"heatmap 需要 image_shape，但 len(W)={N} 不是完美平方，无法自动推断。")
+                raise ValueError(f"heatmap requires image_shape, but len(W)={N} is not a perfect square and cannot be inferred automatically.")
         H, Ww = int(image_shape[0]), int(image_shape[1])
         if H * Ww != N:
-            raise ValueError(f"image_shape={image_shape} 与 len(weight)={N} 不匹配。")
+            raise ValueError(f"image_shape={image_shape} does not match len(weight)={N}.")
         img = w.reshape(H, Ww)
     elif mode == 'heatvector':
         img = w.reshape(1, N)
     else:
-        raise ValueError("mode 必须为 'heatmap' 或 'heatvector'")
+        raise ValueError("mode must be 'heatmap' or 'heatvector'")
 
     # normalization range
     vmin = vmax = None
@@ -507,40 +507,40 @@ def visualize_internal_node_weight(W, b=None,
     return fig, ax
 
 
-# ===================== 样本数据获取与可视化 =====================
+# ===================== Sample Data Retrieval and Visualization =====================
 
-# 默认的类别颜色配置
+# Default category color mapping
 DEFAULT_CATEGORY_COLORS = {
-    "nuclear_morphology_nc": "#e41a1c",      # 红色 - 细胞核形态
-    "cytoplasmic_tone_texture": "#377eb8",   # 蓝色 - 胞质色调与质地
-    "cytoplasmic_granules": "#4daf4a",       # 绿色 - 胞质颗粒与内含物
-    "non_leukocyte_elements": "#984ea3",     # 紫色 - 非白细胞血细胞要素
-    "artifacts_quality": "#ff7f00",          # 橙色 - 制片与技术伪影
+    "nuclear_morphology_nc": "#e41a1c",      # red   - nuclear morphology
+    "cytoplasmic_tone_texture": "#377eb8",   # blue  - cytoplasmic tone and texture
+    "cytoplasmic_granules": "#4daf4a",       # green - cytoplasmic granules and inclusions
+    "non_leukocyte_elements": "#984ea3",     # purple - non-leukocyte blood elements
+    "artifacts_quality": "#ff7f00",          # orange - preparation and technical artifacts
 }
 
 
 def get_sample_data(n, concept_dataset, image_dataset):
     """
-    根据样本索引获取concept score vector和原图像。
-    
+    Retrieve the concept score vector and raw image for a given sample index.
+
     Args:
-        n: 样本索引（在数据集中的编号）
-        concept_dataset: concept score vector的Dataset (TensorDataset)
-        image_dataset: 原图像数据集的Dataset (如BloodMNIST)
-    
+        n: sample index in the dataset
+        concept_dataset: Dataset containing concept score vectors (TensorDataset)
+        image_dataset: Dataset containing raw images (e.g. BloodMNIST)
+
     Returns:
         sample: concept score vector (Tensor, shape [num_concepts])
-        img: 原图像 (numpy array, shape [H, W, C])
-        label: 标签 (int)
+        img: raw image (numpy array, shape [H, W, C])
+        label: class label (int)
     """
-    # 从concept dataset获取特征向量
+    # Retrieve feature vector from the concept dataset
     sample, label_tensor = concept_dataset[n]
     if isinstance(label_tensor, torch.Tensor):
         label = label_tensor.item()
     else:
         label = int(label_tensor)
     
-    # 从image dataset获取原图像
+    # Retrieve raw image from the image dataset
     img_tensor, img_label = image_dataset[n]
     if isinstance(img_tensor, torch.Tensor):
         img = img_tensor.numpy().transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
@@ -554,14 +554,14 @@ def get_sample_data(n, concept_dataset, image_dataset):
 
 def build_concept_colors(cell_feature_metadata, category_colors=None):
     """
-    根据cell_feature_metadata构建每个concept对应的颜色列表。
-    
+    Build a per-concept color list from cell_feature_metadata.
+
     Args:
-        cell_feature_metadata: 细胞特征元数据字典
-        category_colors: 类别颜色字典，如果为None则使用默认颜色
-    
+        cell_feature_metadata: cell feature metadata dictionary
+        category_colors: category color dictionary; uses defaults if None
+
     Returns:
-        concept_colors: 每个concept对应的颜色列表
+        concept_colors: list of colors corresponding to each concept
     """
     if category_colors is None:
         category_colors = DEFAULT_CATEGORY_COLORS
@@ -583,54 +583,54 @@ def plot_sample_with_concepts(n, concept_dataset, image_dataset,
                               figsize=(14, 8),
                               normalize_concepts=True):
     """
-    绘制样本的原图像和对应的concept score vector柱状图。
-    
+    Plot a sample's raw image alongside its concept score vector bar chart.
+
     Args:
-        n: 样本索引
-        concept_dataset: concept score vector的Dataset
-        image_dataset: 原图像数据集的Dataset
-        concept_list: concept名称列表
-        label_dict: 标签字典 {label_id: label_name}
-        cell_feature_metadata: 细胞特征元数据（用于构建concept_colors）
-        category_colors: 类别颜色字典
-        concept_colors: 预先构建的concept颜色列表（优先使用）
-        figsize: 图形大小
-        normalize_concepts: 是否对concept值进行归一化
-    
+        n: sample index
+        concept_dataset: Dataset containing concept score vectors
+        image_dataset: Dataset containing raw images
+        concept_list: list of concept names
+        label_dict: label dictionary {label_id: label_name}
+        cell_feature_metadata: cell feature metadata (used to build concept_colors)
+        category_colors: category color dictionary
+        concept_colors: pre-built concept color list (takes priority if provided)
+        figsize: figure size
+        normalize_concepts: whether to normalize concept values
+
     Returns:
         sample: concept score vector (Tensor)
-        img: 原图像 (numpy array)
-        label: 标签 (int)
+        img: raw image (numpy array)
+        label: class label (int)
         fig: matplotlib Figure
-        axes: matplotlib Axes数组
+        axes: array of matplotlib Axes
     """
     from matplotlib.patches import Patch
     
-    # 获取样本数据
+    # Retrieve sample data
     sample, img, label = get_sample_data(n, concept_dataset, image_dataset)
-    
-    # 归一化concept值用于可视化
+
+    # Normalize concept values for visualization
     if normalize_concepts:
         sample_viz = sample.clone()
         sample_viz = (sample_viz - sample_viz.min()) / (sample_viz.max() - sample_viz.min() + 1e-8)
     else:
         sample_viz = sample
     
-    # 构建concept颜色（如果未提供）
+    # Build concept colors if not provided
     if concept_colors is None and cell_feature_metadata is not None:
         concept_colors = build_concept_colors(cell_feature_metadata, category_colors)
     
-    # 创建图形
+    # Create figure
     fig, axes = plt.subplots(1, 2, figsize=figsize, 
                               gridspec_kw={'width_ratios': [1, 3]})
     
-    # 左图：原图像
+    # Left panel: raw image
     ax_img = axes[0]
     ax_img.imshow(img)
     ax_img.set_title(f"Label: [{label}] {label_dict.get(label, 'Unknown')}", fontsize=11)
     ax_img.axis('off')
     
-    # 右图：concept score柱状图
+    # Right panel: concept score bar chart
     ax_bar = axes[1]
     bars = ax_bar.bar(range(len(concept_list)), 
                        sample_viz.squeeze().numpy() if isinstance(sample_viz, torch.Tensor) else sample_viz,
@@ -638,7 +638,7 @@ def plot_sample_with_concepts(n, concept_dataset, image_dataset,
     ax_bar.set_xticks(range(len(concept_list)))
     ax_bar.set_xticklabels(concept_list, rotation=45, ha='right', fontsize=6)
     
-    # 为x轴标签设置颜色
+    # Set colors for x-axis tick labels
     if concept_colors is not None:
         for ticklabel, color in zip(ax_bar.get_xticklabels(), concept_colors):
             ticklabel.set_color(color)
@@ -647,7 +647,7 @@ def plot_sample_with_concepts(n, concept_dataset, image_dataset,
     ax_bar.set_ylabel('Concept Value' + (' (normalized)' if normalize_concepts else ''), fontsize=10)
     ax_bar.set_title(f'Sample Index: {n}, True Label: {label} ({label_dict.get(label, "Unknown")})', fontsize=11)
     
-    # 添加图例（如果有category_colors）
+    # Add legend (if category_colors is provided)
     if cell_feature_metadata is not None:
         if category_colors is None:
             category_colors = DEFAULT_CATEGORY_COLORS
@@ -660,7 +660,7 @@ def plot_sample_with_concepts(n, concept_dataset, image_dataset,
     return sample, img, label, fig, axes
 
 
-# ===================== 节点权重heatvector可视化 =====================
+# ===================== Node Weight Heatvector Visualization =====================
 
 def plot_node_heatvector(node_idx, info, concept_list,
                          cell_feature_metadata=None,
@@ -671,49 +671,49 @@ def plot_node_heatvector(node_idx, info, concept_list,
                          show=True,
                          save_path=None):
     """
-    绘制指定内部节点的权重heatvector图。
-    
+    Plot the weight heatvector for a specified internal node.
+
     Args:
-        node_idx: 内部节点索引
-        info: extract_sdt_parameters返回的信息字典
-        concept_list: concept名称列表
-        cell_feature_metadata: 细胞特征元数据（用于构建图例）
-        category_colors: 类别颜色字典
-        concept_colors: 预先构建的concept颜色列表
-        cmap: colormap名称
-        figsize: 图形大小
-        show: 是否显示图形
-        save_path: 保存路径（如果提供则保存图片）
-    
+        node_idx: internal node index
+        info: info dictionary returned by extract_sdt_parameters
+        concept_list: list of concept names
+        cell_feature_metadata: cell feature metadata (used to build the legend)
+        category_colors: category color dictionary
+        concept_colors: pre-built concept color list
+        cmap: colormap name
+        figsize: figure size
+        show: whether to display the figure
+        save_path: save path (figure is saved if provided)
+
     Returns:
         fig: matplotlib Figure
         ax: matplotlib Axes
     """
     from matplotlib.patches import Patch
     
-    # 获取节点信息
+    # Retrieve node information
     node = info['internal_nodes'][node_idx]
     W_vec = node['W']
     bias = node['b']
-    
-    # 绘制heatvector
+
+    # Plot heatvector
     fig, ax = visualize_internal_node_weight(
         W_vec, b=bias, mode='heatvector', 
         cmap=cmap, figsize=figsize, show_colorbar=True
     )
     
-    # 设置x轴标签
+    # Set x-axis tick labels
     ax.set_xticks(range(len(concept_list)))
     ax.set_xticklabels(concept_list, rotation=45, ha='right', fontsize=6)
-    
-    # 为x轴标签设置颜色
+
+    # Set colors for x-axis tick labels
     if concept_colors is not None:
         for ticklabel, color in zip(ax.get_xticklabels(), concept_colors):
             ticklabel.set_color(color)
     
     ax.set_title(f'Internal Node {node_idx}: Weight Vector (bias={bias:.4f})')
     
-    # 添加图例
+    # Add legend
     if cell_feature_metadata is not None:
         if category_colors is None:
             category_colors = DEFAULT_CATEGORY_COLORS
@@ -723,7 +723,7 @@ def plot_node_heatvector(node_idx, info, concept_list,
     
     fig.subplots_adjust(bottom=0.45)
     
-    # 保存图片
+    # Save figure
     if save_path is not None:
         import os
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -737,44 +737,44 @@ def plot_node_heatvector(node_idx, info, concept_list,
     return fig, ax
 
 
-def export_node_weight_csv(node_idx, info, concept_list, cell_feature_metadata, 
+def export_node_weight_csv(node_idx, info, concept_list, cell_feature_metadata,
                            output_dir, threshold=0.5):
     """
-    导出单个内部节点的权重向量到CSV文件。
-    
+    Export the weight vector of a single internal node to CSV files.
+
     Args:
-        node_idx: 内部节点索引
-        info: extract_sdt_parameters返回的信息字典
-        concept_list: concept名称列表（英文）
-        cell_feature_metadata: 细胞特征元数据，用于获取中文翻译
-        output_dir: 输出目录（节点子目录，如 ./outputs_70/tree_nodes/IN_0）
-        threshold: 筛选阈值，用于生成filtered CSV
-    
+        node_idx: internal node index
+        info: info dictionary returned by extract_sdt_parameters
+        concept_list: list of concept names (English)
+        cell_feature_metadata: cell feature metadata, used to obtain Chinese translations
+        output_dir: output directory (node subdirectory, e.g. ./outputs_70/tree_nodes/IN_0)
+        threshold: filter threshold for generating the filtered CSV
+
     Returns:
-        (csv_path, filtered_csv_path): 完整CSV和筛选后CSV的路径
+        (csv_path, filtered_csv_path): paths to the full CSV and the filtered CSV
     """
     import pandas as pd
     from pathlib import Path
     
     output_dir = Path(output_dir)
     
-    # 获取节点权重
+    # Retrieve node weights
     node = info['internal_nodes'][node_idx]
     W_vec = node['W']
-    
-    # 转换为numpy数组
+
+    # Convert to numpy array
     if hasattr(W_vec, 'cpu'):
         W_np = W_vec.cpu().numpy()
     else:
         W_np = np.array(W_vec)
     
-    # 构建英文到中文的映射
+    # Build English-to-Chinese mapping
     en_to_zh = {}
     for category in cell_feature_metadata.values():
         for feat in category.get("features", []):
             en_to_zh[feat["en"]] = feat["zh"]
     
-    # 构建DataFrame
+    # Build DataFrame
     data = []
     for i, concept_en in enumerate(concept_list):
         concept_zh = en_to_zh.get(concept_en, "")
@@ -787,12 +787,12 @@ def export_node_weight_csv(node_idx, info, concept_list, cell_feature_metadata,
     
     df = pd.DataFrame(data)
     
-    # 保存完整CSV
+    # Save full CSV
     node_name = f"IN_{node_idx}"
     csv_path = output_dir / f"weights_{node_name}.csv"
     df.to_csv(csv_path, index=False, encoding='utf-8-sig')
     
-    # 筛选大于阈值的条目
+    # Filter entries above the threshold
     df_filtered = df[df['weight'] > threshold].copy()
     df_filtered = df_filtered.sort_values(by='weight', ascending=False)
     filtered_csv_path = output_dir / f"weights_{node_name}_gt{threshold}.csv"
@@ -812,23 +812,23 @@ def batch_export_node_heatvectors(info, concept_list,
                                    export_csv=True,
                                    csv_threshold=0.5):
     """
-    批量导出所有内部节点的heatvector图至指定文件夹。
-    
+    Batch-export heatvector plots for all internal nodes to a specified folder.
+
     Args:
-        info: extract_sdt_parameters返回的信息字典
-        concept_list: concept名称列表
-        output_dir: 输出根目录 (如 "./outputs_70/tree_nodes")
-        cell_feature_metadata: 细胞特征元数据
-        category_colors: 类别颜色字典
-        concept_colors: 预先构建的concept颜色列表
-        cmap: colormap名称
-        figsize: 图形大小
-        node_indices: 要导出的节点索引列表，如果为None则导出所有内部节点
-        export_csv: 是否同时导出权重CSV文件
-        csv_threshold: CSV筛选阈值（导出大于该阈值的条目）
-    
+        info: info dictionary returned by extract_sdt_parameters
+        concept_list: list of concept names
+        output_dir: root output directory (e.g. "./outputs_70/tree_nodes")
+        cell_feature_metadata: cell feature metadata
+        category_colors: category color dictionary
+        concept_colors: pre-built concept color list
+        cmap: colormap name
+        figsize: figure size
+        node_indices: list of node indices to export; None exports all internal nodes
+        export_csv: whether to also export weight CSV files
+        csv_threshold: CSV filter threshold (exports entries above this value)
+
     Returns:
-        exported_files: 导出的文件路径列表
+        exported_files: list of exported file paths
     """
     import os
     from pathlib import Path
@@ -836,22 +836,22 @@ def batch_export_node_heatvectors(info, concept_list,
     output_dir = Path(output_dir)
     exported_files = []
     
-    # 确定要导出的节点
+    # Determine which nodes to export
     if node_indices is None:
         node_indices = range(len(info['internal_nodes']))
     
     total = len(node_indices)
     
     for i, node_idx in enumerate(node_indices):
-        # 创建节点子目录
+        # Create node subdirectory
         node_name = f"IN_{node_idx}"
         node_dir = output_dir / node_name
         node_dir.mkdir(parents=True, exist_ok=True)
         
-        # 保存路径
+        # Save path
         save_path = node_dir / f"heatvector_{node_name}.png"
         
-        # 绘制并保存
+        # Plot and save
         plot_node_heatvector(
             node_idx=node_idx,
             info=info,
@@ -867,7 +867,7 @@ def batch_export_node_heatvectors(info, concept_list,
         
         exported_files.append(str(save_path))
         
-        # 导出CSV文件
+        # Export CSV files
         csv_info = ""
         if export_csv and cell_feature_metadata is not None:
             csv_path, filtered_csv_path = export_node_weight_csv(
@@ -884,36 +884,36 @@ def batch_export_node_heatvectors(info, concept_list,
         
         print(f"[{i+1}/{total}] Exported: {save_path}{csv_info}")
     
-    print(f"\n共导出 {len(exported_files)} 个文件至: {output_dir}")
+    print(f"\nTotal {len(exported_files)} files exported to: {output_dir}")
     return exported_files
 
 
-# ===================== 节点激活分析 =====================
+# ===================== Node Activation Analysis =====================
 
 def compute_node_logits_for_dataset(tree, X_data, device):
     """
-    计算 SDT 所有内部节点在数据集上的 logits (WX + b)
-    
+    Compute logits (WX + b) for all SDT internal nodes on a dataset.
+
     Args:
-        tree: SDT 模型
-        X_data: numpy array, shape (N, input_dim), 标准化后的特征
-        device: 计算设备
-    
+        tree: SDT model
+        X_data: numpy array, shape (N, input_dim), standardized features
+        device: compute device
+
     Returns:
         node_logits: numpy array, shape (N, num_internal_nodes)
-                     每行是一个样本，每列是一个内部节点的 logits
+                     each row is a sample; each column is a node's logit
     """
     tree.eval()
     with torch.no_grad():
-        # 转换为 tensor
+        # Convert to tensor
         X_tensor = torch.from_numpy(X_data).float().to(device)
-        
-        # 数据增强：在前面加上常数 1（与模型内部一致）
+
+        # Data augmentation: prepend constant 1 (consistent with the model)
         batch_size = X_tensor.size(0)
         bias_col = torch.ones(batch_size, 1, device=device, dtype=X_tensor.dtype)
         X_aug = torch.cat((bias_col, X_tensor), dim=1)
-        
-        # 计算所有内部节点的 logits
+
+        # Compute logits for all internal nodes
         logits = tree.inner_nodes(X_aug)  # shape: (N, num_internal_nodes)
         
         node_logits = logits.cpu().numpy()
@@ -921,52 +921,52 @@ def compute_node_logits_for_dataset(tree, X_data, device):
     return node_logits
 
 
-def visualize_top_k_images_for_node(node_idx, node_logits, ds_images, y_labels, 
+def visualize_top_k_images_for_node(node_idx, node_logits, ds_images, y_labels,
                                      label_dict, tree_info, k=20, figsize=(20, 16)):
     """
-    可视化某个内部节点激活值最高的 Top-K 图像
-    
+    Visualize the Top-K highest-activation images for an internal node.
+
     Args:
-        node_idx: 内部节点索引
-        node_logits: shape (N, num_nodes), 所有节点的 logits
-        ds_images: 图像数据集 (medmnist dataset 或 ConcatDataset)
-        y_labels: 标签数组
-        label_dict: 标签索引到名称的映射
-        tree_info: extract_sdt_parameters 返回的信息字典
-        k: 展示的图像数量
-        figsize: 图像大小
-    
+        node_idx: internal node index
+        node_logits: shape (N, num_nodes), logits for all nodes
+        ds_images: image dataset (medmnist dataset or ConcatDataset)
+        y_labels: label array
+        label_dict: mapping from label index to class name
+        tree_info: info dictionary returned by extract_sdt_parameters
+        k: number of images to display
+        figsize: figure size
+
     Returns:
         fig: matplotlib Figure
-        top_k_indices: Top-K 样本索引
-        top_k_scores: Top-K 样本分数
+        top_k_indices: Top-K sample indices
+        top_k_scores: Top-K sample scores
     """
-    # 获取该节点的所有 logits
+    # Retrieve logits for this node
     scores = node_logits[:, node_idx]
-    
-    # 排序，获取 top-k 索引
+
+    # Sort and retrieve top-k indices
     top_k_indices = np.argsort(scores)[::-1][:k]
     top_k_scores = scores[top_k_indices]
-    
-    # 计算布局
+
+    # Compute layout
     n_cols = 5
     n_rows = (k + n_cols - 1) // n_cols
     
     fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
     axes = axes.flatten()
     
-    # 获取节点权重信息
+    # Retrieve node weight information
     node_info = tree_info['internal_nodes'][node_idx]
     layer = node_info['layer']
     bias = node_info['b']
-    
-    fig.suptitle(f'内部节点 {node_idx} (Layer {layer}) 激活值 Top-{k} 图像\n'
+
+    fig.suptitle(f'Internal Node {node_idx} (Layer {layer}) — Top-{k} Highest-Activation Images\n'
                  f'bias = {bias:.4f}', fontsize=14, fontweight='bold')
-    
+
     for i, (sample_idx, score) in enumerate(zip(top_k_indices, top_k_scores)):
         ax = axes[i]
-        
-        # 获取原始图像
+
+        # Retrieve raw image
         img_tensor = ds_images[sample_idx][0]
         if isinstance(img_tensor, torch.Tensor):
             img = img_tensor.numpy().transpose(1, 2, 0)
@@ -975,15 +975,15 @@ def visualize_top_k_images_for_node(node_idx, node_logits, ds_images, y_labels,
             if img.ndim == 3 and img.shape[0] in [1, 3]:
                 img = img.transpose(1, 2, 0)
         
-        # 获取标签
+        # Retrieve label
         label = y_labels[sample_idx]
         label_name = label_dict[label]
-        
+
         ax.imshow(img)
         ax.set_title(f'#{sample_idx}\nScore: {score:.3f}\n{label_name}', fontsize=9)
         ax.axis('off')
-    
-    # 隐藏多余的子图
+
+    # Hide excess subplots
     for j in range(i + 1, len(axes)):
         axes[j].axis('off')
     
@@ -991,48 +991,48 @@ def visualize_top_k_images_for_node(node_idx, node_logits, ds_images, y_labels,
     return fig, top_k_indices, top_k_scores
 
 
-def visualize_top_and_bottom_k_images_for_node(node_idx, node_logits, ds_images, y_labels, 
+def visualize_top_and_bottom_k_images_for_node(node_idx, node_logits, ds_images, y_labels,
                                                 label_dict, tree_info, k=10, figsize=(20, 16)):
     """
-    同时可视化某个内部节点激活值最高和最低的 Top-K 图像
-    用于对比分析该节点学到的判别特征
-    
+    Simultaneously visualize the Top-K highest- and lowest-activation images for an internal node,
+    enabling contrastive analysis of the discriminative features learned at that node.
+
     Args:
-        node_idx: 内部节点索引
-        node_logits: shape (N, num_nodes), 所有节点的 logits
-        ds_images: 图像数据集 (medmnist dataset 或 ConcatDataset)
-        y_labels: 标签数组
-        label_dict: 标签索引到名称的映射
-        tree_info: extract_sdt_parameters 返回的信息字典
-        k: 展示的图像数量（高/低各 k 个）
-        figsize: 图像大小
-    
+        node_idx: internal node index
+        node_logits: shape (N, num_nodes), logits for all nodes
+        ds_images: image dataset (medmnist dataset or ConcatDataset)
+        y_labels: label array
+        label_dict: mapping from label index to class name
+        tree_info: info dictionary returned by extract_sdt_parameters
+        k: number of images per group (k high-activation + k low-activation)
+        figsize: figure size
+
     Returns:
         fig: matplotlib Figure
-        top_k_indices: 高激活样本索引
-        bottom_k_indices: 低激活样本索引
+        top_k_indices: high-activation sample indices
+        bottom_k_indices: low-activation sample indices
     """
     scores = node_logits[:, node_idx]
     sorted_indices = np.argsort(scores)
     
-    top_k_indices = sorted_indices[::-1][:k]  # 最高
-    bottom_k_indices = sorted_indices[:k]      # 最低
+    top_k_indices = sorted_indices[::-1][:k]  # highest activation
+    bottom_k_indices = sorted_indices[:k]      # lowest activation
     
     n_cols = 5
     n_rows = (k + n_cols - 1) // n_cols
     
     fig, axes = plt.subplots(n_rows * 2, n_cols, figsize=figsize)
     
-    # 获取节点权重信息
+    # Retrieve node weight information
     node_info = tree_info['internal_nodes'][node_idx]
     layer = node_info['layer']
     bias = node_info['b']
-    
-    fig.suptitle(f'内部节点 {node_idx} (Layer {layer}) | bias = {bias:.4f}\n'
-                 f'上半部分: 激活值最高 Top-{k} | 下半部分: 激活值最低 Top-{k}', 
+
+    fig.suptitle(f'Internal Node {node_idx} (Layer {layer}) | bias = {bias:.4f}\n'
+                 f'Top half: Highest-activation Top-{k} | Bottom half: Lowest-activation Top-{k}',
                  fontsize=14, fontweight='bold')
-    
-    # Top-K (高激活)
+
+    # Top-K (high activation)
     for i, sample_idx in enumerate(top_k_indices):
         row = i // n_cols
         col = i % n_cols
@@ -1056,7 +1056,7 @@ def visualize_top_and_bottom_k_images_for_node(node_idx, node_logits, ds_images,
         if col == 0:
             ax.set_ylabel('HIGH', fontsize=10, color='green', fontweight='bold')
     
-    # Bottom-K (低激活)
+    # Bottom-K (low activation)
     for i, sample_idx in enumerate(bottom_k_indices):
         row = n_rows + i // n_cols
         col = i % n_cols
@@ -1086,16 +1086,16 @@ def visualize_top_and_bottom_k_images_for_node(node_idx, node_logits, ds_images,
 
 def analyze_all_nodes_summary(node_logits, y_labels, label_dict, tree_info):
     """
-    生成所有节点的激活分析摘要
-    
+    Generate an activation analysis summary for all nodes.
+
     Args:
-        node_logits: shape (N, num_nodes), 所有节点的 logits
-        y_labels: 标签数组
-        label_dict: 标签索引到名称的映射
-        tree_info: extract_sdt_parameters 返回的信息字典
-    
+        node_logits: shape (N, num_nodes), logits for all nodes
+        y_labels: label array
+        label_dict: mapping from label index to class name
+        tree_info: info dictionary returned by extract_sdt_parameters
+
     Returns:
-        DataFrame: 包含每个节点的统计信息
+        DataFrame: statistical summary for each node
     """
     import pandas as pd
     from collections import Counter
@@ -1108,14 +1108,14 @@ def analyze_all_nodes_summary(node_logits, y_labels, label_dict, tree_info):
         top_20_indices = np.argsort(scores)[::-1][:20]
         bottom_20_indices = np.argsort(scores)[:20]
         
-        # Top-20 标签分布
+        # Top-20 label distribution
         top_labels = [y_labels[i] for i in top_20_indices]
         bottom_labels = [y_labels[i] for i in bottom_20_indices]
         
         top_label_counts = Counter(top_labels)
         bottom_label_counts = Counter(bottom_labels)
         
-        # 最常见的标签
+        # Most common label
         top_dominant_label = top_label_counts.most_common(1)[0] if top_label_counts else (None, 0)
         bottom_dominant_label = bottom_label_counts.most_common(1)[0] if bottom_label_counts else (None, 0)
         
